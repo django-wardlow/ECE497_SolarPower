@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "ads1x1x"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c907ad7732d7d83dafc84f0d9a0909072e86137de28aa97beeb421ef8b648c6"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "nb 1.1.0",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -537,12 +547,15 @@ dependencies = [
 name = "esp32-test"
 version = "0.1.0"
 dependencies = [
+ "ads1x1x",
  "critical-section",
+ "embedded-hal 1.0.0",
  "esp-backtrace",
  "esp-bootloader-esp-idf",
  "esp-hal",
  "esp-println",
  "log",
+ "nb 1.1.0",
 ]
 
 [[package]]

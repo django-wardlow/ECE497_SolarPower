@@ -10,11 +10,13 @@
 use core::cell::RefCell;
 use core::time;
 
+use ads1x1x::Ads1x1x;
 use critical_section::Mutex;
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::delay::Delay;
 use esp_hal::gpio::{Level, Output, OutputConfig};
+use esp_hal::i2c::master::I2c;
 use esp_hal::interrupt::InterruptHandler;
 use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::mcpwm::operator::{DeadTimeCfg, LinkedPins, PwmActions, PwmPinConfig};
@@ -22,11 +24,14 @@ use esp_hal::mcpwm::timer::{PwmWorkingMode, TimerClockConfig};
 use esp_hal::mcpwm::{McPwm, PeripheralClockConfig};
 use esp_hal::peripherals::MCPWM0;
 use esp_hal::rmt::{LoopMode, PulseCode, Rmt, TxChannelConfig, TxChannelCreator};
-use esp_hal::{Blocking, handler, main, ram};
+use esp_hal::{Blocking, handler, i2c, main, ram};
 use esp_hal::time::{Duration, Rate};
 use esp_hal::timer::PeriodicTimer;
 use esp_hal::timer::timg::TimerGroup;
 use esp_println::println;
+#[macro_use(block)]
+use nb;
+use nb::block;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -62,6 +67,18 @@ fn main() -> ! {
 
     let d4 = Output::new(peripherals.GPIO4, Level::Low, OutputConfig::default().with_drive_mode(esp_hal::gpio::DriveMode::PushPull));
     let d5 = Output::new(peripherals.GPIO5, Level::Low, OutputConfig::default().with_drive_mode(esp_hal::gpio::DriveMode::PushPull));
+
+    let i2c = I2c::new(peripherals.I2C0, i2c::master::Config::default()).unwrap().with_sda(peripherals.GPIO22).with_scl(peripherals.GPIO21);
+
+    let mut adc = Ads1x1x::new_ads1015(i2c, ads1x1x::TargetAddr::Gnd);
+
+    adc.set_data_rate(ads1x1x::DataRate12Bit::Sps3300).unwrap();
+
+    adc.set_full_scale_range(ads1x1x::FullScaleRange::Within2_048V).unwrap();
+
+    // let mut cont_adc = adc.into_continuous().unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+
+    // cont_adc.read();
 
 
     let control_period_us = 50000;
@@ -103,6 +120,12 @@ fn main() -> ! {
 
     loop{
 
+        let a0 = block!(adc.read(ads1x1x::channel::SingleA0)).unwrap() as f32 / 2048 as f32 * 2.048 * 1.52;
+
+        let a1 = block!(adc.read(ads1x1x::channel::SingleA1)).unwrap() as f32 / 2048 as f32 * 2.048 * 6.5;
+
+        println!("IL: {:.4}, Vout: {:.3}", a0, a1);
+
     }    
 
 }
@@ -115,10 +138,12 @@ fn handler() {
         let mut pwm_ctl_mutex = PWM.borrow_ref_mut(cs);
         let pwm = pwm_ctl_mutex.as_mut().unwrap();
 
-        pwm.duty_cycle += 1;
-        pwm.duty_cycle %= max_duty;
+        // pwm.duty_cycle += 1;
+        // pwm.duty_cycle %= max_duty;
 
-        pwm.duty_cycle = pwm.duty_cycle.min(max_duty).max(min_duty);
+        // pwm.duty_cycle = pwm.duty_cycle.min(max_duty).max(min_duty);
+
+        pwm.duty_cycle = 100;
 
         pwm.pwm.set_timestamp_a(pwm.duty_cycle);
         pwm.pwm.set_timestamp_b(pwm.duty_cycle);
