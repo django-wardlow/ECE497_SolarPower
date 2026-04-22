@@ -24,3 +24,6 @@ target/
 
 # Ignore .DS_Store file in mac
 **/.DS_Store
+
+# ignore the workspace file
+ECE497_SolarPower.code-workspace
