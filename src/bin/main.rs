@@ -46,6 +46,9 @@ struct pwm_ctl{
 // static OUT: Mutex<RefCell<Option<Output>>> = Mutex::new(RefCell::new(None));
 static PWM: Mutex<RefCell<Option<pwm_ctl>>> = Mutex::new(RefCell::new(None));
 
+const max_duty: u16 = 180;
+const min_duty: u16 = 20;
+
 
 #[main]
 fn main() -> ! {
@@ -113,7 +116,9 @@ fn handler() {
         let pwm = pwm_ctl_mutex.as_mut().unwrap();
 
         pwm.duty_cycle += 1;
-        pwm.duty_cycle %= 200;
+        pwm.duty_cycle %= max_duty;
+
+        pwm.duty_cycle = pwm.duty_cycle.min(max_duty).max(min_duty);
 
         pwm.pwm.set_timestamp_a(pwm.duty_cycle);
         pwm.pwm.set_timestamp_b(pwm.duty_cycle);
