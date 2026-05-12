@@ -7,7 +7,7 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::time;
 
 use ads1x1x::Ads1x1x;
@@ -32,6 +32,7 @@ use esp_println::println;
 #[macro_use(block)]
 use nb;
 use nb::block;
+use pid::Pid;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -45,7 +46,8 @@ esp_bootloader_esp_idf::esp_app_desc!();
 struct pwm_ctl{
     duty_cycle: u16,
     ctl_timer: PeriodicTimer<'static, Blocking>,
-    pwm: LinkedPins<'static, MCPWM0<'static>, 0>
+    pwm: LinkedPins<'static, MCPWM0<'static>, 0>,
+    pid: Pid<f32>
 }
 
 // static OUT: Mutex<RefCell<Option<Output>>> = Mutex::new(RefCell::new(None));
@@ -53,6 +55,11 @@ static PWM: Mutex<RefCell<Option<pwm_ctl>>> = Mutex::new(RefCell::new(None));
 
 const max_duty: u16 = 180;
 const min_duty: u16 = 20;
+
+const target_output: f32 = 5.0;
+
+static VOUT: Mutex<Cell<f32>> = Mutex::new(Cell::new(0.0));
+
 
 
 #[main]
@@ -81,7 +88,7 @@ fn main() -> ! {
     // cont_adc.read();
 
 
-    let control_period_us = 50000;
+    let control_period_us = 5000;
 
     let pwm_period_us = 10;
 
@@ -112,7 +119,10 @@ fn main() -> ! {
             duty_cycle: 0,
             ctl_timer: control_timer,
             pwm: complementary_pwm,
+            pid: Pid::new(5.0, 200.0),
         };
+        pwm.pid.p(10.0, 1000.0);
+        pwm.pid.i(1.0, 1000.0);
         PWM.borrow_ref_mut(cs).replace(pwm);
     });
 
@@ -125,6 +135,10 @@ fn main() -> ! {
         let a1 = block!(adc.read(ads1x1x::channel::SingleA1)).unwrap() as f32 / 2048 as f32 * 2.048 * 6.5;
 
         println!("IL: {:.4}, Vout: {:.3}", a0, a1);
+
+        critical_section::with(|cs|{
+            VOUT.borrow(cs).set(a1);
+        });
 
     }    
 
@@ -141,9 +155,17 @@ fn handler() {
         // pwm.duty_cycle += 1;
         // pwm.duty_cycle %= max_duty;
 
-        // pwm.duty_cycle = pwm.duty_cycle.min(max_duty).max(min_duty);
+        let vout = VOUT.borrow(cs).get();
 
-        pwm.duty_cycle = 100;
+        let pwm_out = pwm.pid.next_control_output(VOUT.borrow(cs).get()).output;
+
+        pwm.duty_cycle = pwm_out as u16;
+
+        // println!("vout: {:.3} pwm duty: {:.1}", vout, pwm_out);
+
+        pwm.duty_cycle = pwm.duty_cycle.min(max_duty).max(min_duty);
+
+        // pwm.duty_cycle = 100;
 
         pwm.pwm.set_timestamp_a(pwm.duty_cycle);
         pwm.pwm.set_timestamp_b(pwm.duty_cycle);
