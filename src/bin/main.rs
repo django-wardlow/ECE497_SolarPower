@@ -34,6 +34,7 @@ use nb;
 use nb::block;
 use pid::Pid;
 
+
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -47,18 +48,27 @@ struct pwm_ctl{
     duty_cycle: u16,
     ctl_timer: PeriodicTimer<'static, Blocking>,
     pwm: LinkedPins<'static, MCPWM0<'static>, 0>,
-    pid: Pid<f32>
+    pid_v: Pid<f32>,
+    pid_i: Pid<f32>,
+    count: usize,
+}
+
+struct adc_data{
+    // adc: 
+    Vin: f32,
+    Vout: f32,
+    Iout: f32,
 }
 
 // static OUT: Mutex<RefCell<Option<Output>>> = Mutex::new(RefCell::new(None));
-static PWM: Mutex<RefCell<Option<pwm_ctl>>> = Mutex::new(RefCell::new(None));
+static CTRL_DATA: Mutex<RefCell<Option<pwm_ctl>>> = Mutex::new(RefCell::new(None));
 
 const max_duty: u16 = 180;
 const min_duty: u16 = 20;
 
 const target_output: f32 = 5.0;
 
-static VOUT: Mutex<Cell<f32>> = Mutex::new(Cell::new(0.0));
+static ADC_DATA: Mutex<RefCell<adc_data>> = Mutex::new(RefCell::new(adc_data { Vin: 0.0, Vout: 0.0, Iout: 0.0 }));
 
 
 
@@ -75,7 +85,7 @@ fn main() -> ! {
     let d4 = Output::new(peripherals.GPIO4, Level::Low, OutputConfig::default().with_drive_mode(esp_hal::gpio::DriveMode::PushPull));
     let d5 = Output::new(peripherals.GPIO5, Level::Low, OutputConfig::default().with_drive_mode(esp_hal::gpio::DriveMode::PushPull));
 
-    let i2c = I2c::new(peripherals.I2C0, i2c::master::Config::default()).unwrap().with_sda(peripherals.GPIO22).with_scl(peripherals.GPIO21);
+    let i2c = I2c::new(peripherals.I2C0, i2c::master::Config::default().with_frequency(Rate::from_khz(400))).unwrap().with_sda(peripherals.GPIO22).with_scl(peripherals.GPIO21);
 
     let mut adc = Ads1x1x::new_ads1015(i2c, ads1x1x::TargetAddr::Gnd);
 
@@ -94,6 +104,9 @@ fn main() -> ! {
 
     let dead_time = 20;
 
+    let target_v = 5.0;
+    let target_i = 0.5;
+
     let pwm_clock = PeripheralClockConfig::with_frequency(Rate::from_mhz(40)).unwrap();
 
     let mut mcpwm = McPwm::new(peripherals.MCPWM0, pwm_clock);
@@ -107,71 +120,66 @@ fn main() -> ! {
 
     mcpwm.timer0.start(pwm_clock.timer_clock_with_frequency(199, PwmWorkingMode::Increase, Rate::from_khz(100)).unwrap());
 
-    let mut control_timer = PeriodicTimer::new(TimerGroup::new(peripherals.TIMG0).timer0);
+    let mut pid_v = Pid::new(target_v, 1.0);
+    let mut pid_i =  Pid::new(target_i, 1.0);
 
-    control_timer.set_interrupt_handler(handler);
+    pid_v.p(0.05, 1.0);
+    pid_v.i(0.01, 1.0);
 
-    control_timer.start(Duration::from_micros(control_period_us)).unwrap();
-
-    critical_section::with(|cs|{
-        control_timer.listen();
-        let mut pwm = pwm_ctl{
-            duty_cycle: 0,
-            ctl_timer: control_timer,
-            pwm: complementary_pwm,
-            pid: Pid::new(5.0, 200.0),
-        };
-        pwm.pid.p(10.0, 1000.0);
-        pwm.pid.i(1.0, 1000.0);
-        PWM.borrow_ref_mut(cs).replace(pwm);
-    });
-
+    pid_i.p(1.0, 20.0);
+    pid_i.i(0.05, 1.0);
     println!("started timer");
 
+
+    //reading these should be done by an interupt form the ADC and then once all 3 are read we should update the PWM instead of a fixed timer
     loop{
 
-        let a0 = block!(adc.read(ads1x1x::channel::SingleA0)).unwrap() as f32 / 2048 as f32 * 2.048 * 1.52;
+        //read values from ADC. apply adc gain, then offset, then circut gain
+        let Iout = ((block!(adc.read(ads1x1x::channel::SingleA0)).unwrap() as f32 / 2048 as f32 * 2.048) - 0.073) * 1.52;
 
-        let a1 = block!(adc.read(ads1x1x::channel::SingleA1)).unwrap() as f32 / 2048 as f32 * 2.048 * 6.5;
+        let Vout = ((block!(adc.read(ads1x1x::channel::SingleA1)).unwrap() as f32 / 2048 as f32 * 2.048) - 0.067) * 6.5;
 
-        println!("IL: {:.4}, Vout: {:.3}", a0, a1);
+        let Vin = ((block!(adc.read(ads1x1x::channel::SingleA2)).unwrap() as f32 / 2048 as f32 * 2.048) - 0.067) * 10.0;
 
-        critical_section::with(|cs|{
-            VOUT.borrow(cs).set(a1);
-        });
+        //compute load thevnin resistance v/i = r
+        let load_r = Vout/Iout;
+
+        let thev_v = load_r*target_i;
+
+        let current_ctl_v;
+
+        //hack because when measurements are to low thevnin resistance becomes unreliable
+        if Iout > 0.05 {
+
+            current_ctl_v = thev_v + pid_i.next_control_output(Iout).output;
+
+        }
+        else{
+            current_ctl_v = target_v;
+        }
+
+
+        pid_v.setpoint(current_ctl_v.min(target_v).max(0.0));
+        
+
+        let pwm_v_out = pid_v.next_control_output(Vout).output;
+
+        //compute feed forward term based in input voltage
+        let ff = pid_v.setpoint / Vin;
+
+        let mut duty_cycle = ((pwm_v_out + ff) * 200.0) as u16;
+
+        //limit duty cycle to sain values
+        duty_cycle = duty_cycle.min(max_duty).max(min_duty);
+
+        complementary_pwm.set_timestamp_a(duty_cycle);
+        complementary_pwm.set_timestamp_b(duty_cycle);
+
+
+        println!("IL: {:.4}, Vin: {:.3}, Vout: {:.3}, v targ: {:.3}, load r: {:.3}", Iout, Vin, Vout, pid_v.setpoint, load_r);
 
     }    
 
 }
 
-#[handler]
-#[ram]
-fn handler() {
 
-    critical_section::with(|cs|{
-        let mut pwm_ctl_mutex = PWM.borrow_ref_mut(cs);
-        let pwm = pwm_ctl_mutex.as_mut().unwrap();
-
-        // pwm.duty_cycle += 1;
-        // pwm.duty_cycle %= max_duty;
-
-        let vout = VOUT.borrow(cs).get();
-
-        let pwm_out = pwm.pid.next_control_output(VOUT.borrow(cs).get()).output;
-
-        pwm.duty_cycle = pwm_out as u16;
-
-        // println!("vout: {:.3} pwm duty: {:.1}", vout, pwm_out);
-
-        pwm.duty_cycle = pwm.duty_cycle.min(max_duty).max(min_duty);
-
-        // pwm.duty_cycle = 100;
-
-        pwm.pwm.set_timestamp_a(pwm.duty_cycle);
-        pwm.pwm.set_timestamp_b(pwm.duty_cycle);
-
-        pwm.ctl_timer.clear_interrupt();
-        
-    });
-
-}
