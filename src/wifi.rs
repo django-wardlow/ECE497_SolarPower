@@ -20,7 +20,7 @@ const STATIC_IP: &str = "192.168.13.37/24";
 const GATEWAY_IP: &str = "192.168.13.37";
 
 const PASSWORD: &str = "password";
-const SSID: &str = "espap";
+const SSID: &str = "congo ps";
 
 
 #[embassy_executor::task]
