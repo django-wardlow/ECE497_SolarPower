@@ -73,6 +73,7 @@ esp-backtrace = { version = "0.18.1", features = [
   "println",
 ] }
 embassy-sync = "0.8.0"
+bytemuck = "1.25.0"
 
 
 [profile.dev]

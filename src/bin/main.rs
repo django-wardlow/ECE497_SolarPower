@@ -30,7 +30,8 @@ use esp_backtrace as _;
 
 
 
-use congo_ps as lib;
+use congo_ps::{self as lib, mk_static};
+use static_cell::StaticCell;
 
 
 extern crate alloc;
@@ -40,6 +41,7 @@ extern crate alloc;
 esp_bootloader_esp_idf::esp_app_desc!();
 
 static mut APP_CORE_STACK: Stack<4096> = Stack::new();
+
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
@@ -55,36 +57,39 @@ async fn main(spawner: Spawner) -> ! {
 
     info!("Embassy initialized!");
 
-    let mut ch_buf = [PsData::default(); 1024];
+    static buf: StaticCell<[PsData; 32]> = StaticCell::new();
 
-    let mut ps_data: Channel<CriticalSectionRawMutex, PsData> = zerocopy_channel::Channel::new(&mut ch_buf);
+    let b = buf.init([PsData{data:[[0.0; 4]; 16]}; 32]);
 
-    let (ps_data_tx, ps_data_rx) = ps_data.split();
+    let ps_data: &mut Channel<CriticalSectionRawMutex, PsData> = mk_static!(Channel<CriticalSectionRawMutex, PsData>, zerocopy_channel::Channel::new(b));
+
+    let (ps_data_tx, mut ps_data_rx) = ps_data.split();
 
     let radio_init = &*lib::mk_static!(
         esp_radio::Controller<'static>,
         esp_radio::init().expect("Failed to initialize Wi-Fi/BLE controller")
     );
+
     let rng = Rng::new();
 
     let stack = lib::wifi::start_wifi(radio_init, peripherals.WIFI, rng, &spawner).await;
 
-    let web_app = lib::web::WebApp::default();
-    for id in 0..lib::web::WEB_TASK_POOL_SIZE {
-        spawner.must_spawn(lib::web::web_task(
-            id,
-            stack,
-            web_app.router,
-            web_app.config,
-        ));
-    }
+
+    spawner.must_spawn(lib::web::web_task(
+        0,
+        stack,
+        ps_data_rx
+    ));
+
+    
+    
 
     let mut cpu = CpuControl::new(peripherals.CPU_CTRL);
 
     let d4 = Output::new(peripherals.GPIO4, Level::Low, OutputConfig::default().with_drive_mode(esp_hal::gpio::DriveMode::PushPull));
     let d5 = Output::new(peripherals.GPIO5, Level::Low, OutputConfig::default().with_drive_mode(esp_hal::gpio::DriveMode::PushPull));
 
-    let i2c = I2c::new(peripherals.I2C0, esp_hal::i2c::master::Config::default().with_frequency(Rate::from_khz(400))).unwrap().with_sda(peripherals.GPIO22).with_scl(peripherals.GPIO21);
+    let i2c = I2c::new(peripherals.I2C0, esp_hal::i2c::master::Config::default().with_frequency(Rate::from_khz(100))).unwrap().with_sda(peripherals.GPIO22).with_scl(peripherals.GPIO21);
 
     let pwm_clock = PeripheralClockConfig::with_frequency(Rate::from_mhz(40)).unwrap();
 
@@ -102,4 +107,5 @@ async fn main(spawner: Spawner) -> ! {
     loop {
         Timer::after(Duration::from_secs(1)).await;
     }
+
 }

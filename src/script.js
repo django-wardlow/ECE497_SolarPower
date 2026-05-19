@@ -25,7 +25,7 @@ let opts = {
   title: "power supply data",
   id: "chart1",
   class: "my-chart",
-  width: window.innerWidth - 20,
+  width: window.innerWidth*0.8,
   height: window.innerHeight - 250,
   scales: {
     x: {
@@ -219,20 +219,38 @@ function update_power_data(data){
 
   let checked = document.getElementById("run-graph").checked;
 
-  if (isNumeric(pwr_data.voltage) && checked){
+  let vin = data[0];
+  let vout = data[1];
+  let iout = data[2];
+  let duty = data[3];
+
+  let rload = vout/iout;
+
+  let pout = vout*iout;
+
+  let iin = iout*duty;
+
+  let pin = iin*vin;
+
+  let eff = (pout/pin)*100;
+
+  duty = duty*100;
+
+
+  if (checked){
 
     sample += 1;
 
     graph_data[0].push(sample);
-    graph_data[1].push(parseFloat(pwr_data.vout));
-    graph_data[2].push(parseFloat(pwr_data.iout)/1000);
-    graph_data[3].push(parseFloat(pwr_data.pout)/1000);
-    graph_data[4].push(parseFloat(pwr_data.vin));
-    graph_data[5].push(parseFloat(pwr_data.iin)/1000);
-    graph_data[6].push(parseFloat(pwr_data.pin)/1000);
-    graph_data[7].push(parseFloat(pwr_data.eff));
-    graph_data[8].push(parseFloat(pwr_data.duty));
-    graph_data[9].push(parseFloat(pwr_data.rload));
+    graph_data[1].push(vout);
+    graph_data[2].push(iout);
+    graph_data[3].push(pout);
+    graph_data[4].push(vin);
+    graph_data[5].push(iin);
+    graph_data[6].push(pin);
+    graph_data[7].push(eff);
+    graph_data[8].push(duty);
+    graph_data[9].push(rload);
 
 
     uplot.setData(graph_data);
@@ -241,31 +259,27 @@ function update_power_data(data){
 
   const voltage = document.getElementById("Vout");
 
-  voltage.textContent = data.vout + " V";
+  voltage.textContent = vout.toFixed(2) + " V";
 
   const current = document.getElementById("Iout");
 
-  current.textContent = data.iout + " mA";
+  current.textContent = iout.toFixed(2) + " A";
 
   const power = document.getElementById("Pout");
 
-  power.textContent = data.pout + " J";
-
-  const watts = document.getElementById("watts");
-
-  watts.textContent = data.watts + " mW";
+  power.textContent = pout.toFixed(2) + " W";
 
   const volt_in = document.getElementById("Vin");
 
-  energy.textContent = (data.vin) + " V";
+  volt_in.textContent = vin.toFixed(2) + " V";
 
-  const eff = document.getElementById("Efficiency");
+  const eff_entry = document.getElementById("Efficiency");
 
-  eff.textContent = (data.eff) + " η";
+  eff_entry.textContent = eff.toFixed(1) + " η";
 
-  const duty = document.getElementById("Duty");
+  const duty_entry = document.getElementById("Duty");
 
-  duty.textContent = (data.duty) + " %";
+  duty_entry.textContent = duty.toFixed(1) + " %";
 
 }
 
@@ -287,6 +301,7 @@ function initWebSocket() {
   websocket.onopen    = onOpen;
   websocket.onclose   = onClose;
   websocket.onmessage = onMessage;
+  websocket.binaryType = 'arraybuffer';
 }
 function onOpen(event) {
   console.log('Connection opened');
@@ -302,9 +317,21 @@ function onClose(event) {
 function onMessage(event) {
   console.log("WS event: ", event.data);
 
-  var msg_json = JSON.parse(event.data);
+  const floatArray = new Float32Array(event.data);
 
-  update_power_data(msg_json);
+  console.log("ws recieved: ", floatArray);
+
+  for (i = 0; i<(floatArray.length/4); i++){
+
+    let index = i*4;
+
+    update_power_data([floatArray[index], floatArray[index+1], floatArray[index+2], floatArray[index+3]]);
+
+  }
+
+  // var msg_json = JSON.parse(event.data);
+
+  
 
 }
 

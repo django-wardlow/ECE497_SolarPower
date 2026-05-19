@@ -45,15 +45,12 @@ use pid::Pid;
 const max_duty: u16 = 180;
 const min_duty: u16 = 20;
 
-pub static PS_CMD: CriticalSectionMutex<PsCmd> = CriticalSectionMutex::new(PsCmd{v: 0.0, i:0.0});
+pub static PS_CMD: critical_section::Mutex<RefCell<PsCmd>> = critical_section::Mutex::new(RefCell::new(PsCmd{v: 0.0, i:0.0}));
 
 
 #[derive(Default, Clone, Copy)]
 pub struct PsData{
-    pub vin: f32,
-    pub vout: f32, 
-    pub iout: f32,
-    pub duty: f32,
+    pub data: [[f32; 4]; 16],
 }
 
 #[derive(Default, Clone, Copy)]
@@ -97,21 +94,37 @@ pub fn run_ps(i2c: I2c<Blocking>, mut mcpwm_timer: Timer<0, MCPWM0>, pwm_clk: Pe
     pid_v.p(0.05, 1.0);
     pid_v.i(0.01, 1.0);
 
-    pid_i.p(1.0, 20.0);
+    pid_i.p(0.5, 20.0);
     pid_i.i(0.05, 1.0);
     println!("started closed loop ctl");
+
+    let mut buf = [[0.0; 4]; 16];
+    let mut index = 0;
 
     //reading these should be done by an interupt form the ADC and then once all 3 are read we should update the PWM instead of a fixed timer
     loop{
 
-        //read values from ADC. apply adc gain, then offset, then circut gain
-        let Iout = ((block!(adc.read(ads1x1x::channel::SingleA0)).unwrap() as f32 / 2048 as f32 * 2.048) - 0.073) * 1.52;
+        let a0_raw = block!(adc.read(ads1x1x::channel::SingleA0));
+        let a1_raw = block!(adc.read(ads1x1x::channel::SingleA1));
+        let a2_raw = block!(adc.read(ads1x1x::channel::SingleA2));
 
-        let Vout = ((block!(adc.read(ads1x1x::channel::SingleA1)).unwrap() as f32 / 2048 as f32 * 2.048) - 0.067) * 6.5;
+        if let Ok(a0) = a0_raw && let Ok(a1) = a1_raw && let Ok(a2) = a2_raw{
 
-        let Vin = ((block!(adc.read(ads1x1x::channel::SingleA2)).unwrap() as f32 / 2048 as f32 * 2.048) - 0.067) * 10.0;
+            //read values from ADC. apply adc gain, then offset, then circut gain
+            let Iout = ((a0 as f32 / 2048 as f32 * 2.048) - 0.073) * 1.52;
 
-        PS_CMD.lock(|m| {target_i = m.i; target_v = m.v} );
+            let Vout = ((a1 as f32 / 2048 as f32 * 2.048) - 0.067) * 6.5;
+
+            let Vin = ((a2 as f32 / 2048 as f32 * 2.048) - 0.067) * 10.0;
+
+            critical_section::with(|cs| {
+            let d = PS_CMD.borrow_ref(cs);
+
+            target_v = d.v;
+            target_i = d.i;
+
+        });
+        
 
         pid_i.setpoint(target_i);
 
@@ -141,36 +154,55 @@ pub fn run_ps(i2c: I2c<Blocking>, mut mcpwm_timer: Timer<0, MCPWM0>, pwm_clk: Pe
         //compute feed forward term based in input voltage
         let ff = pid_v.setpoint / Vin;
 
-        let duty = (pwm_v_out + ff);
+        let duty = (pwm_v_out + ff).min(0.95).max(0.0);
 
         let mut duty_cycle = (duty * 200.0) as u16;
 
         //limit duty cycle to sain values
-        duty_cycle = duty_cycle.min(max_duty).max(min_duty);
+        // duty_cycle = duty_cycle.min(max_duty).max(min_duty);
 
         complementary_pwm.set_timestamp_a(duty_cycle);
         complementary_pwm.set_timestamp_b(duty_cycle);
 
-        let data = PsData{
-            vin: Vin,
-            vout: Vout,
-            iout: Iout,
-            duty: duty,
-        };
 
-        let buf = sender.try_send();
+        buf[index] = [Vin, Vout, Iout, duty];
+        index += 1;
 
-        if let Some(b) = buf{
-            *b = data;
+        if index == buf.len(){
 
-            sender.send_done();
+            let data = PsData{
+                data: buf
+            };
+
+            // println!("buf len is {}", sender.len());
+
+            let buf = sender.try_send();
+
+            if let Some(b) = buf{
+                *b = data;
+
+                sender.send_done();
+            }
+            else {
+                println!("buf is full");
+            }
+
+            index = 0;
+
         }
 
+        //println!("IL: {:.4}, Vin: {:.3}, Vout: {:.3}, v targ: {:.3}, load r: {:.3}", Iout, Vin, Vout, pid_v.setpoint, load_r);
 
-        println!("IL: {:.4}, Vin: {:.3}, Vout: {:.3}, v targ: {:.3}, load r: {:.3}", Iout, Vin, Vout, pid_v.setpoint, load_r);
+
+        }
+
+        else {
+            println!("adc i2c issue!!!!!!!!!!!!!!!!!!!!!!1");
+        }    
 
     }    
 
 }
+
 
 
