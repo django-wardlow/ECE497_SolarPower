@@ -45,7 +45,7 @@ use pid::Pid;
 const max_duty: u16 = 180;
 const min_duty: u16 = 20;
 
-pub static PS_CMD: critical_section::Mutex<RefCell<PsCmd>> = critical_section::Mutex::new(RefCell::new(PsCmd{v: 0.0, i:0.0}));
+pub static PS_CMD: critical_section::Mutex<RefCell<PsCmd>> = critical_section::Mutex::new(RefCell::new(PsCmd{v: 0.0, i:0.0, mppt:false}));
 
 
 #[derive(Default, Clone, Copy)]
@@ -57,12 +57,17 @@ pub struct PsData{
 pub struct PsCmd{
     pub v: f32,
     pub i: f32, 
+    pub mppt: bool
 }
 
 
 
 
-pub fn run_ps(i2c: I2c<Blocking>, mut mcpwm_timer: Timer<0, MCPWM0>, pwm_clk: PeripheralClockConfig, mut complementary_pwm: LinkedPins<MCPWM0, 0>, mut sender: embassy_sync::zerocopy_channel::Sender<CriticalSectionRawMutex, PsData>){
+pub fn run_ps(i2c: I2c<Blocking>, 
+    mut mcpwm_timer: Timer<0, MCPWM0>, 
+    pwm_clk: PeripheralClockConfig, 
+    mut complementary_pwm: LinkedPins<MCPWM0, 0>, 
+    mut sender: embassy_sync::zerocopy_channel::Sender<CriticalSectionRawMutex, PsData>){
 
     let dead_time = 20;
 
@@ -87,9 +92,23 @@ pub fn run_ps(i2c: I2c<Blocking>, mut mcpwm_timer: Timer<0, MCPWM0>, pwm_clk: Pe
 
     let mut target_i = 0.0;
     let mut target_v= 0.0;
+    let mut mppt_toggle = false;
 
     let mut pid_v = Pid::new(0.0, 1.0);
     let mut pid_i =  Pid::new(0.0, 1.0);
+
+    enum Direction{
+        Negative,
+        Positive
+    }
+
+    struct Perturbation{
+        direction: Direction,
+        magnitude: u16,
+        initial_power: f32
+    }
+
+    let mut perturbation = Perturbation{direction: Direction::Positive, magnitude: 0, initial_power: 0.0};
 
     pid_v.p(0.05, 1.0);
     pid_v.i(0.01, 1.0);
@@ -158,6 +177,34 @@ pub fn run_ps(i2c: I2c<Blocking>, mut mcpwm_timer: Timer<0, MCPWM0>, pwm_clk: Pe
 
         let mut duty_cycle = (duty * 200.0) as u16;
 
+
+        // Start mppt here
+        if mppt_toggle && Iout < (0.98*target_i) {
+            let Iin = (Iout * Vout)/Vin;    // input current
+            let power_in = Iin*Vin;         // current power
+            
+            match (&perturbation.direction, power_in > perturbation.initial_power){
+                (Direction::Positive, true) => {
+                    perturbation.direction = Direction::Positive;
+                }
+                (Direction::Positive, false) => {
+                    perturbation.direction = Direction::Negative;
+                }
+                (Direction::Negative, true) => {
+                    perturbation.direction = Direction::Negative;
+                }
+                (Direction::Negative, false) => {
+                    perturbation.direction = Direction::Positive;
+                }
+            }
+
+            // add in logic for dynamically adjusting the magntiude of the perturbation
+            perturbation.magnitude = 2;
+            perturbation.initial_power = power_in;
+
+            // adjust the duty
+        }
+
         //limit duty cycle to sain values
         // duty_cycle = duty_cycle.min(max_duty).max(min_duty);
 
@@ -204,5 +251,13 @@ pub fn run_ps(i2c: I2c<Blocking>, mut mcpwm_timer: Timer<0, MCPWM0>, pwm_clk: Pe
 
 }
 
+/*
+For maximum power point tracking, we want to wait until the control loop sets the duty
+to the next value before perturbing and then observing. We'll perturb and observe after
+every cycle that the control loop completes. We should probably change this later. For
+now we'll just use really simple logic with a fixed perturbation size. 
 
-
+the mppt works by checking if the mppt toggle is on and also checking if the output
+current is within 2% of the target current. This way, if the output current isn't
+close to the target current, we'll actually perturb to try to get more current.
+*/
