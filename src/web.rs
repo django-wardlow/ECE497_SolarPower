@@ -107,6 +107,11 @@ impl ws::WebSocketCallbackWithState<WSstate<'_>> for WShandler{
                         },
                         "F" => {},
                         "D" => {},
+                        "M" => {
+                            critical_section::with(|cs|{
+                                PS_CMD.borrow_ref_mut(cs).mppt = (parts.next().unwrap().parse::<usize>().unwrap() == 1);
+                            });
+                        },
                         _ => ()
                     }
                 }

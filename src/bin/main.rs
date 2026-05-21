@@ -89,7 +89,7 @@ async fn main(spawner: Spawner) -> ! {
     let d4 = Output::new(peripherals.GPIO4, Level::Low, OutputConfig::default().with_drive_mode(esp_hal::gpio::DriveMode::PushPull));
     let d5 = Output::new(peripherals.GPIO5, Level::Low, OutputConfig::default().with_drive_mode(esp_hal::gpio::DriveMode::PushPull));
 
-    let i2c = I2c::new(peripherals.I2C0, esp_hal::i2c::master::Config::default().with_frequency(Rate::from_khz(100))).unwrap().with_sda(peripherals.GPIO22).with_scl(peripherals.GPIO21);
+    let i2c = I2c::new(peripherals.I2C0, esp_hal::i2c::master::Config::default().with_frequency(Rate::from_khz(400))).unwrap().with_sda(peripherals.GPIO22).with_scl(peripherals.GPIO21);
 
     let pwm_clock = PeripheralClockConfig::with_frequency(Rate::from_mhz(40)).unwrap();
 

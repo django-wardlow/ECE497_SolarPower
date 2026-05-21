@@ -53,13 +53,11 @@ The webpage that is served to control the power supply
             </div> 
 
             <div class="userinputbox">
-              <label for="F_set", name="output v">Freq kHz</label>
-              <input type="number", id="F", placeholder="100", step="1", onchange="value_changed(this)">
-            </div> 
-
-            <div class="userinputbox">
-              <label for="D_set", name="output v">dead time us</label>
-              <input type="number", id="D", placeholder="20", step="1", onchange="value_changed(this)">
+              <label for="Iout_set", name="output v">MPPT </label>
+              <label class="switch">
+                <input type="checkbox" id="M", onchange="switch_changed(this)">
+                <span class="slider"></span>
+              </label>
             </div> 
 
 

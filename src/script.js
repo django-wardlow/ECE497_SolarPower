@@ -212,7 +212,7 @@ function isNumeric(str) {
          !isNaN(parseFloat(str)) // ...and ensure strings of whitespace fail
 }
 
-
+const bound = (num, min, max) => Math.min(Math.max(num, min), max);
 
 //update the power data on the dashboard
 function update_power_data(data){
@@ -224,7 +224,7 @@ function update_power_data(data){
   let iout = data[2];
   let duty = data[3];
 
-  let rload = vout/iout;
+  let rload = bound(vout/iout, -100, 1000);
 
   let pout = vout*iout;
 
@@ -232,7 +232,7 @@ function update_power_data(data){
 
   let pin = iin*vin;
 
-  let eff = (pout/pin)*100;
+  let eff = bound((pout/pin)*100, 0, 150);
 
   duty = duty*100;
 
@@ -286,6 +286,14 @@ function update_power_data(data){
 //sends a new value back to the power supply
 function value_changed(element){
   val = element.value;
+  name = element.id;
+  console.log("setting change", name, val);
+  websocket.send(name+":"+val);
+}
+
+//sends a new value back to the power supply
+function switch_changed(element){
+  val = element.checked + 0;
   name = element.id;
   console.log("setting change", name, val);
   websocket.send(name+":"+val);

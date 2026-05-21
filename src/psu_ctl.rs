@@ -61,6 +61,8 @@ pub struct PsCmd{
 }
 
 
+const ROLL_AVG: usize = 4;
+
 
 
 pub fn run_ps(i2c: I2c<Blocking>, 
@@ -97,6 +99,8 @@ pub fn run_ps(i2c: I2c<Blocking>,
     let mut pid_v = Pid::new(0.0, 1.0);
     let mut pid_i =  Pid::new(0.0, 1.0);
 
+    let mut duty = 0.0;
+
     enum Direction{
         Negative,
         Positive
@@ -104,14 +108,17 @@ pub fn run_ps(i2c: I2c<Blocking>,
 
     struct Perturbation{
         direction: Direction,
-        magnitude: u16,
-        initial_power: f32
+        magnitude: f32,
+        prev_power: f32
     }
 
-    let mut perturbation = Perturbation{direction: Direction::Positive, magnitude: 0, initial_power: 0.0};
+    let mut perturbation = Perturbation{direction: Direction::Positive, magnitude: 0.0, prev_power: 0.0};
 
-    pid_v.p(0.05, 1.0);
+    let mut mppt_d = 0.05;
+
+    pid_v.p(0.03, 1.0);
     pid_v.i(0.01, 1.0);
+    //pid_v.d(0.1, 1.0);
 
     pid_i.p(0.5, 20.0);
     pid_i.i(0.05, 1.0);
@@ -119,6 +126,9 @@ pub fn run_ps(i2c: I2c<Blocking>,
 
     let mut buf = [[0.0; 4]; 16];
     let mut index = 0;
+
+    let mut roll_avg_buf = [0.0; ROLL_AVG];
+    let mut roll_avg_idx = 0;
 
     //reading these should be done by an interupt form the ADC and then once all 3 are read we should update the PWM instead of a fixed timer
     loop{
@@ -141,102 +151,134 @@ pub fn run_ps(i2c: I2c<Blocking>,
 
             target_v = d.v;
             target_i = d.i;
+            mppt_toggle = d.mppt;
 
-        });
-        
+            });
 
-        pid_i.setpoint(target_i);
+            roll_avg_buf[roll_avg_idx] = Vout;
 
-        //compute load thevnin resistance v/i = r
-        let load_r = Vout/Iout;
+            roll_avg_idx += 1;
 
-        let thev_v = load_r*target_i;
+            let vout_avg = roll_avg_buf.iter().sum::<f32>()/ROLL_AVG as f32;
 
-        let current_ctl_v;
-
-        //hack because when measurements are to low thevnin resistance becomes unreliable
-        if Iout > 0.05 {
-
-            current_ctl_v = thev_v + pid_i.next_control_output(Iout).output;
-
-        }
-        else{
-            current_ctl_v = target_v;
-        }
+            if roll_avg_idx >= ROLL_AVG{
+                roll_avg_idx = 0;
+            }
 
 
-        pid_v.setpoint(current_ctl_v.min(target_v).max(0.0));
-        
-
-        let pwm_v_out = pid_v.next_control_output(Vout).output;
-
-        //compute feed forward term based in input voltage
-        let ff = pid_v.setpoint / Vin;
-
-        let duty = (pwm_v_out + ff).min(0.95).max(0.0);
-
-        let mut duty_cycle = (duty * 200.0) as u16;
-
-
-        // Start mppt here
-        if mppt_toggle && Iout < (0.98*target_i) {
-            let Iin = (Iout * Vout)/Vin;    // input current
-            let power_in = Iin*Vin;         // current power
+            if target_i > 0.0 && target_v > 0.0{
             
-            match (&perturbation.direction, power_in > perturbation.initial_power){
-                (Direction::Positive, true) => {
-                    perturbation.direction = Direction::Positive;
+
+                pid_i.setpoint(target_i);
+
+                //compute load thevnin resistance v/i = r
+                let load_r = Vout/Iout;
+
+                let thev_v = load_r*target_i;
+
+                let current_ctl_v;
+
+                //hack because when measurements are to low thevnin resistance becomes unreliable
+                if Iout > 0.05 {
+
+                    current_ctl_v = thev_v + pid_i.next_control_output(Iout).output;
+
                 }
-                (Direction::Positive, false) => {
-                    perturbation.direction = Direction::Negative;
+                else{
+                    current_ctl_v = target_v;
                 }
-                (Direction::Negative, true) => {
-                    perturbation.direction = Direction::Negative;
+
+                // MPPT
+
+                if mppt_toggle{
+                    let Iin = Iout * duty;    // input current
+                    let power_in = Iin*Vin;         // current power
+                    
+                    match (&perturbation.direction, power_in > perturbation.prev_power){
+                        (Direction::Positive, true) => {
+                            perturbation.direction = Direction::Positive;
+                        }
+                        (Direction::Positive, false) => {
+                            perturbation.direction = Direction::Negative;
+                        }
+                        (Direction::Negative, true) => {
+                            perturbation.direction = Direction::Negative;
+                        }
+                        (Direction::Negative, false) => {
+                            perturbation.direction = Direction::Positive;
+                        }
+                    }
+
+                    // add in logic for dynamically adjusting the magntiude of the perturbation
+                    perturbation.magnitude = 0.02;
+                    perturbation.prev_power = power_in;
+
+                    match perturbation.direction {
+                        Direction::Negative => mppt_d -= perturbation.magnitude,
+                        Direction::Positive => mppt_d += perturbation.magnitude,
+                    }
+
+                    //mppt_v -= 0.001;
+
+                    //println!("mppt v is {}", mppt_d);
+
+                    duty = mppt_d;
                 }
-                (Direction::Negative, false) => {
-                    perturbation.direction = Direction::Positive;
+                else{
+                    pid_v.setpoint(current_ctl_v.min(target_v).max(0.0));
+
+                    let pwm_v_out = pid_v.next_control_output(vout_avg).output;
+
+                    //compute feed forward term based in input voltage
+                    let ff = pid_v.setpoint / Vin;
+
+                    duty = (pwm_v_out + ff).min(0.95).max(0.0);
                 }
+
+
+
+            }
+            else{
+                duty = 0.0;
+                pid_i.reset_integral_term();
+                pid_v.reset_integral_term();
             }
 
-            // add in logic for dynamically adjusting the magntiude of the perturbation
-            perturbation.magnitude = 2;
-            perturbation.initial_power = power_in;
-
-            // adjust the duty
-        }
-
-        //limit duty cycle to sain values
-        // duty_cycle = duty_cycle.min(max_duty).max(min_duty);
-
-        complementary_pwm.set_timestamp_a(duty_cycle);
-        complementary_pwm.set_timestamp_b(duty_cycle);
+            let duty_cycle= (duty * 200.0) as u16;
 
 
-        buf[index] = [Vin, Vout, Iout, duty];
-        index += 1;
+            //limit duty cycle to sain values
+            // duty_cycle = duty_cycle.min(max_duty).max(min_duty);
 
-        if index == buf.len(){
+            complementary_pwm.set_timestamp_a(duty_cycle);
+            complementary_pwm.set_timestamp_b(duty_cycle);
 
-            let data = PsData{
-                data: buf
-            };
 
-            // println!("buf len is {}", sender.len());
+            buf[index] = [Vin, Vout, Iout, duty];
+            index += 1;
 
-            let buf = sender.try_send();
+            if index == buf.len(){
 
-            if let Some(b) = buf{
-                *b = data;
+                let data = PsData{
+                    data: buf
+                };
 
-                sender.send_done();
+                // println!("buf len is {}", sender.len());
+
+                let buf = sender.try_send();
+
+                if let Some(b) = buf{
+                    *b = data;
+
+                    sender.send_done();
+                }
+                else {
+                    println!("buf is full");
+                }
+
+                index = 0;
+
             }
-            else {
-                println!("buf is full");
-            }
-
-            index = 0;
-
-        }
 
         //println!("IL: {:.4}, Vin: {:.3}, Vout: {:.3}, v targ: {:.3}, load r: {:.3}", Iout, Vin, Vout, pid_v.setpoint, load_r);
 
@@ -250,14 +292,3 @@ pub fn run_ps(i2c: I2c<Blocking>,
     }    
 
 }
-
-/*
-For maximum power point tracking, we want to wait until the control loop sets the duty
-to the next value before perturbing and then observing. We'll perturb and observe after
-every cycle that the control loop completes. We should probably change this later. For
-now we'll just use really simple logic with a fixed perturbation size. 
-
-the mppt works by checking if the mppt toggle is on and also checking if the output
-current is within 2% of the target current. This way, if the output current isn't
-close to the target current, we'll actually perturb to try to get more current.
-*/
