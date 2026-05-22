@@ -171,17 +171,17 @@ pub fn run_ps(i2c: I2c<Blocking>,
 
                 pid_i.setpoint(target_i);
 
-                //compute load thevnin resistance v/i = r
+                //compute load resistance v/i = r
                 let load_r = Vout/Iout;
 
-                let thev_v = load_r*target_i;
+                let cc_v = load_r*target_i;
 
                 let current_ctl_v;
 
                 //hack because when measurements are to low thevnin resistance becomes unreliable
                 if Iout > 0.05 {
 
-                    current_ctl_v = thev_v + pid_i.next_control_output(Iout).output;
+                    current_ctl_v = cc_v + pid_i.next_control_output(Iout).output;
 
                 }
                 else{
